@@ -65,8 +65,8 @@ export function TimeSlider(props: TimeSliderProps): JSX.Element {
   useEffect(() => {
     setLoaded(false);
     setIndex(props.startEnabled ? getIndex(props.currentDate) : -1);
-    setCurrentDate(props.startEnabled ? props.currentDate : "--");    
-  }, [props.metahash])
+    setCurrentDate(props.startEnabled ? props.currentDate : "--");
+  }, [props.metahash]);
 
   useEffect(() => {
     setOffset(getOffset(currentDate));
@@ -85,7 +85,7 @@ export function TimeSlider(props: TimeSliderProps): JSX.Element {
       firstUpdate.current = false;
       return;
     }
-    if (index >= 0) { 
+    if (index >= 0) {
       setCurrentDate(props.dates[index]);
       if (loaded) {
         props.updateDate(props.metahash, props.dates[index]);
@@ -125,14 +125,15 @@ export function TimeSlider(props: TimeSliderProps): JSX.Element {
     if (play) {
       setLoaded(true);
       await props.onPlay(props.metahash, () => {
-      // Reset animation
-      if (index == props.dates.length - 1) {
-        setIndex(0);
-      }
-      setTimer(
-        setInterval(() => {
-          setIndex((index) => index + 1);
-        }, 1000));
+        // Reset animation
+        if (index == props.dates.length - 1) {
+          setIndex(0);
+        }
+        setTimer(
+          setInterval(() => {
+            setIndex((index) => index + 1);
+          }, 1000)
+        );
       });
     } else {
       clearInterval(timer);

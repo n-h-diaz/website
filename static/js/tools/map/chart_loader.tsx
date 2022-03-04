@@ -89,7 +89,9 @@ export function ChartLoader(): JSX.Element {
   const { placeInfo, statVar, isLoading, display } = useContext(Context);
   const [rawData, setRawData] = useState<ChartRawData | undefined>(undefined);
   const [chartData, setChartData] = useState<ChartData | undefined>(undefined);
-  const [sampleDatesChartData, setSampleDatesChartData] = useState<Record<string, Record<string, ChartRawData>>>({});
+  const [sampleDatesChartData, setSampleDatesChartData] = useState<
+    Record<string, Record<string, ChartRawData>>
+  >({});
   const [onPlayCallback, setOnPlayCallback] = useState<() => void>(undefined);
 
   useEffect(() => {
@@ -157,7 +159,16 @@ export function ChartLoader(): JSX.Element {
       callback();
       return;
     }
-    fetchData(placeInfo.value, statVar.value, isLoading, setRawData, metahash, rawData.sampleDates[metahash], sampleDatesChartData, setSampleDatesChartData);
+    fetchData(
+      placeInfo.value,
+      statVar.value,
+      isLoading,
+      setRawData,
+      metahash,
+      rawData.sampleDates[metahash],
+      sampleDatesChartData,
+      setSampleDatesChartData
+    );
   };
 
   const updateDate = (metahash: string, date: string) => {
@@ -166,7 +177,7 @@ export function ChartLoader(): JSX.Element {
       placeInfo.value,
       statVar.value,
       setChartData,
-      metahash == "BestAvailable" ? "" : metahash, 
+      metahash == "BestAvailable" ? "" : metahash
     );
   };
 
@@ -300,7 +311,9 @@ async function fetchData(
   metahash?: string,
   currentSampleDates?: Array<string>,
   sampleDatesChartData?: Record<string, Record<string, ChartRawData>>,
-  setSampleDatesChartData?: (data: Record<string, Record<string, ChartRawData>>) => void,
+  setSampleDatesChartData?: (
+    data: Record<string, Record<string, ChartRawData>>
+  ) => void
 ): Promise<void> {
   isLoading.setIsDataLoading(true);
   if (!statVar.dcid) {
@@ -361,30 +374,36 @@ async function fetchData(
     });
 
   // Optionally compute for each sample date
-  let enclosedPlaceDatesList: Array<Promise<GetStatSetResponse>> = []; 
-  let allEnclosedPlaceDatesList: Array<Promise<GetStatSetAllResponse>> = [];
-  let breadcrumbPlaceDatesList: Array<Promise<GetStatSetResponse>> = [];
+  const enclosedPlaceDatesList: Array<Promise<GetStatSetResponse>> = [];
+  const allEnclosedPlaceDatesList: Array<Promise<GetStatSetAllResponse>> = [];
+  const breadcrumbPlaceDatesList: Array<Promise<GetStatSetResponse>> = [];
   if (metahash && currentSampleDates) {
     for (const i in currentSampleDates) {
-      enclosedPlaceDatesList.push(axios
-        .get(
-          `/api/stats/within-place?parent_place=${placeInfo.enclosingPlace.dcid}&child_type=${placeInfo.enclosedPlaceType}&stat_vars=${statVar.dcid}&date=${currentSampleDates[i]}`
-        )
-        .then((resp) => resp.data));
-      allEnclosedPlaceDatesList.push(axios
-        .get(
-          `/api/stats/within-place/all?parent_place=${placeInfo.enclosingPlace.dcid}&child_type=${placeInfo.enclosedPlaceType}&stat_vars=${statVar.dcid}&date=${currentSampleDates[i]}`
-        )
-        .then((resp) => resp.data));
-      breadcrumbPlaceDatesList.push(axios
-        .post("/api/stats/set", {
-          places: breadcrumbPlaceDcids,
-          stat_vars: [statVar.dcid],
-          date: currentSampleDates[i],
-        })
-        .then((resp) => {
-          return resp.data;
-        }));
+      enclosedPlaceDatesList.push(
+        axios
+          .get(
+            `/api/stats/within-place?parent_place=${placeInfo.enclosingPlace.dcid}&child_type=${placeInfo.enclosedPlaceType}&stat_vars=${statVar.dcid}&date=${currentSampleDates[i]}`
+          )
+          .then((resp) => resp.data)
+      );
+      allEnclosedPlaceDatesList.push(
+        axios
+          .get(
+            `/api/stats/within-place/all?parent_place=${placeInfo.enclosingPlace.dcid}&child_type=${placeInfo.enclosedPlaceType}&stat_vars=${statVar.dcid}&date=${currentSampleDates[i]}`
+          )
+          .then((resp) => resp.data)
+      );
+      breadcrumbPlaceDatesList.push(
+        axios
+          .post("/api/stats/set", {
+            places: breadcrumbPlaceDcids,
+            stat_vars: [statVar.dcid],
+            date: currentSampleDates[i],
+          })
+          .then((resp) => {
+            return resp.data;
+          })
+      );
     }
   }
   const enclosedPlaceDatesPromise = Promise.all(enclosedPlaceDatesList);
@@ -493,7 +512,7 @@ async function fetchData(
         const sampleDates: Record<string, Array<string>> = getSampleDates(
           statVarSummary[statVar.dcid].provenanceSummary,
           placeInfo.enclosedPlaceType,
-          metadataMap,
+          metadataMap
         );
         isLoading.setIsDataLoading(false);
         if (metahash && currentSampleDates) {
@@ -525,11 +544,17 @@ async function fetchData(
               europeanCountries,
               dataDate,
               sampleDates,
-            } 
-          } 
-          let newSampleDatesChartData: Record<string, Record<string, ChartRawData>> = {};
+            };
+          }
+          let newSampleDatesChartData: Record<
+            string,
+            Record<string, ChartRawData>
+          > = {};
           if (Object.entries(sampleDatesChartData).length > 0) {
-            newSampleDatesChartData = Object.assign(newSampleDatesChartData, sampleDatesChartData)
+            newSampleDatesChartData = Object.assign(
+              newSampleDatesChartData,
+              sampleDatesChartData
+            );
           }
           newSampleDatesChartData[metahash] = currentSampleDatesData;
           setSampleDatesChartData(newSampleDatesChartData);
@@ -663,7 +688,9 @@ function loadChartData(
     }
   }
   const unit = getUnit(rawData.placeStat, rawData.metadataMap);
-  const sampleDates = metaHash ? rawData.sampleDates[metaHash] : rawData.sampleDates["Best Available"];
+  const sampleDates = metaHash
+    ? rawData.sampleDates[metaHash]
+    : rawData.sampleDates["Best Available"];
   setChartData({
     breadcrumbValues,
     dates: statVarDates,
