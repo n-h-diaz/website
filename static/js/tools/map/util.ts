@@ -532,13 +532,13 @@ export function getSampleDates(
   metadataMap: Record<string, StatMetadata>
 ): Record<string, Array<string>> {
   // Generate map of metatext to metahash
-  const metahashMap = {};
+  const metahashMap: Record<string, string> = {};
   for (const metahash in metadataMap) {
     const metatext = getMetaText(metadataMap[metahash]);
     metahashMap[metatext] = metahash;
   }
 
-  const sampleDates = {};
+  const sampleDates: Record<string, Array<string>> = {};
   let bestAvailable: Array<string> = [];
   for (const provId in provenanceSummary) {
     const provenance = provenanceSummary[provId];
