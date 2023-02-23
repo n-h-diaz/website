@@ -11,16 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+ 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
+ 
 nameSuffix: -climatetrace
 namespace: website
-
+ 
 resources:
   - ../../base
-
+ 
 configMapGenerator:
   - behavior: merge
     literals:
@@ -35,8 +35,14 @@ configMapGenerator:
   - behavior: merge
     name: store-configmap
     files:
+      - base_bigtable_info.yaml
       - custom_bigtable_info.yaml
-
+  - name: githash-configmap
+    behavior: merge
+    literals:
+      - mixer_hash.txt=6c03841
+      - website_hash.txt=e929dbf
+ 
 patchesStrategicMerge:
   - |-
     apiVersion: apps/v1
