@@ -24,8 +24,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { ASYNC_ELEMENT_HOLDER_CLASS } from "../../constants/css_constants";
 import { INITAL_LOADING_CLASS } from "../../constants/tile_constants";
 import { ChartEmbed } from "../../place/chart_embed";
-import { USA_NAMED_TYPED_PLACE } from "../../shared/constants";
-import { PointApiResponse } from "../../shared/stat_types";
+import { PointApiResponse, SeriesApiResponse } from "../../shared/stat_types";
 import { NamedTypedPlace, StatVarSpec } from "../../shared/types";
 import {
   getCappedStatVarDate,
@@ -39,11 +38,14 @@ import {
 } from "../../types/ranking_unit_types";
 import { RankingTileSpec } from "../../types/subject_page_proto_types";
 import { rankingPointsToCsv } from "../../utils/chart_csv_utils";
-import { getPointWithin } from "../../utils/data_fetch_utils";
-import { getPlaceDisplayNames, getPlaceNames } from "../../utils/place_utils";
-import { getUnit } from "../../utils/stat_metadata_utils";
+import { getPointWithin, getSeriesWithin } from "../../utils/data_fetch_utils";
 import { getDateRange } from "../../utils/string_utils";
-import { getStatVarName } from "../../utils/tile_utils";
+import {
+  getDenomInfo,
+  getNoDataErrorMsg,
+  getStatVarName,
+  getUnitAndScaling,
+} from "../../utils/tile_utils";
 import { SvRankingUnits } from "./sv_ranking_units";
 
 const RANKING_COUNT = 5;
@@ -136,6 +138,11 @@ export function RankingTile(props: RankingTilePropType): JSX.Element {
         })}
       {rankingData &&
         Object.keys(rankingData).map((statVar) => {
+          const errorMsg =
+            _.isEmpty(rankingData[statVar]) ||
+            rankingData[statVar].numDataPoints === 0
+              ? getNoDataErrorMsg(props.statVarSpec)
+              : "";
           return (
             <SvRankingUnits
               key={statVar}
@@ -149,6 +156,7 @@ export function RankingTile(props: RankingTilePropType): JSX.Element {
               hideFooter={props.hideFooter}
               onHoverToggled={props.onHoverToggled}
               tileId={props.id}
+              errorMsg={errorMsg}
             />
           );
         })}
@@ -174,17 +182,12 @@ export async function fetchData(
   // Get map of date to variables that should use this date for its data fetch
   const dateToVariable = { [LATEST_DATE_KEY]: [] };
   for (const spec of props.statVarSpec) {
-    for (const sv of [spec.statVar, spec.denom]) {
-      if (!sv) {
-        continue;
-      }
-      const variableDate =
-        spec.date || getCappedStatVarDate(sv) || LATEST_DATE_KEY;
-      if (!dateToVariable[variableDate]) {
-        dateToVariable[variableDate] = [];
-      }
-      dateToVariable[variableDate].push(sv);
+    const variableDate =
+      spec.date || getCappedStatVarDate(spec.statVar) || LATEST_DATE_KEY;
+    if (!dateToVariable[variableDate]) {
+      dateToVariable[variableDate] = [];
     }
+    dateToVariable[variableDate].push(spec.statVar);
   }
   // Make one promise for each date
   const statPromises: Promise<PointApiResponse>[] = [];
@@ -206,20 +209,31 @@ export async function fetchData(
       )
     );
   }
-  return Promise.all(statPromises)
-    .then((statResponses) => {
-      // Merge the responses of all stat promises and get the ranking data from
-      // the merged response
-      const mergedResponse = { data: {}, facets: {} };
-      statResponses.forEach((resp) => {
-        mergedResponse.data = Object.assign(mergedResponse.data, resp.data);
-        mergedResponse.facets = Object.assign(
-          mergedResponse.facets,
-          resp.facets
-        );
-      });
+  const statPromise = Promise.all(statPromises).then((statResponses) => {
+    // Merge the responses of all stat promises
+    const mergedResponse = { data: {}, facets: {} };
+    statResponses.forEach((resp) => {
+      mergedResponse.data = Object.assign(mergedResponse.data, resp.data);
+      mergedResponse.facets = Object.assign(mergedResponse.facets, resp.facets);
+    });
+    return mergedResponse;
+  });
+  const denoms = props.statVarSpec
+    .map((spec) => spec.denom)
+    .filter((sv) => !!sv);
+  const denomPromise = _.isEmpty(denoms)
+    ? Promise.resolve(null)
+    : getSeriesWithin(
+        props.apiRoot,
+        props.place.dcid,
+        props.enclosedPlaceType,
+        denoms
+      );
+  return Promise.all([statPromise, denomPromise]).then(
+    ([statResp, denomResp]) => {
       const rankingData = pointApiToPerSvRankingData(
-        mergedResponse,
+        statResp,
+        denomResp,
         props.statVarSpec
       );
       if (props.rankingMetadata.showMultiColumn) {
@@ -229,32 +243,8 @@ export async function fetchData(
         );
       }
       return rankingData;
-    })
-    .then((rankingData) => {
-      // Fetch place names.
-      const places: Set<string> = new Set();
-      for (const statVar in rankingData) {
-        for (const point of rankingData[statVar].points) {
-          places.add(point.placeDcid);
-        }
-      }
-      // We want the display name (gets name with state code if available) if
-      // parent place is USA
-      const placeNamesPromise = _.isEqual(
-        props.place.dcid,
-        USA_NAMED_TYPED_PLACE.dcid
-      )
-        ? getPlaceDisplayNames(Array.from(places), props.apiRoot)
-        : getPlaceNames(Array.from(places), props.apiRoot);
-      return placeNamesPromise.then((placeNames) => {
-        for (const statVar in rankingData) {
-          for (const point of rankingData[statVar].points) {
-            point.placeName = placeNames[point.placeDcid] || point.placeDcid;
-          }
-        }
-        return rankingData;
-      });
-    });
+    }
+  );
 }
 
 // Reduces RankingData to only the SV used for sorting, to be compatible for multi-column rendering in RankingUnit.
@@ -287,6 +277,7 @@ function transformRankingDataForMultiColumn(
 
 function pointApiToPerSvRankingData(
   statData: PointApiResponse,
+  denomData: SeriesApiResponse,
   statVarSpecs: StatVarSpec[]
 ): RankingData {
   const rankingData: RankingData = {};
@@ -300,7 +291,7 @@ function pointApiToPerSvRankingData(
     // might not display.
     const sources = new Set<string>();
     const dates = new Set<string>();
-    let svUnit = "";
+    const { unit, scaling } = getUnitAndScaling(spec, statData);
     for (const place in statData.data[spec.statVar]) {
       const statPoint = statData.data[spec.statVar][place];
       const rankingPoint = {
@@ -312,29 +303,18 @@ function pointApiToPerSvRankingData(
         continue;
       }
       if (spec.denom) {
-        if (
-          spec.denom in statData.data &&
-          place in statData.data[spec.denom] &&
-          statData.data[spec.denom][place].value != 0
-        ) {
-          const denomPoint = statData.data[spec.denom][place];
-          rankingPoint.value /= denomPoint.value;
-          if (denomPoint.facet && statData.facets[denomPoint.facet]) {
-            const denomSource = statData.facets[denomPoint.facet].provenanceUrl;
-            if (denomSource) {
-              sources.add(denomSource);
-            }
-          }
-        } else {
+        const denomInfo = getDenomInfo(spec, denomData, place, statPoint.date);
+        if (!denomInfo) {
           console.log(`Skipping ${place}, missing ${spec.denom}`);
           continue;
         }
+        rankingPoint.value /= denomInfo.value;
+        sources.add(denomInfo.source);
       }
       arr.push(rankingPoint);
       dates.add(statPoint.date);
       if (statPoint.facet && statData.facets[statPoint.facet]) {
         const statPointSource = statData.facets[statPoint.facet].provenanceUrl;
-        svUnit = svUnit || getUnit(statData.facets[statPoint.facet]);
         if (statPointSource) {
           sources.add(statPointSource);
         }
@@ -346,8 +326,8 @@ function pointApiToPerSvRankingData(
     const numDataPoints = arr.length;
     rankingData[spec.statVar] = {
       points: arr,
-      unit: [spec.unit || svUnit],
-      scaling: [spec.scaling],
+      unit: [unit],
+      scaling: [scaling],
       numDataPoints,
       sources,
       dateRange: getDateRange(Array.from(dates)),

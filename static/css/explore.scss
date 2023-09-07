@@ -62,6 +62,18 @@
   .explore-charts {
     font-size: 1.25rem;
   }
+  
+  .explore-charts.place-overview-only {
+    #subject-page-main-pane {
+      .category {
+        padding-top: 0;
+      }
+  
+      .block {
+        padding-top: 0;
+      }
+    }
+  }
 }
 
 #explore-more-section {
@@ -268,4 +280,8 @@
   z-index: 20;
   height: calc(100vh - 100px);
   overflow-y: scroll;
+}
+
+#ranking-table-container {
+  margin-left: 24px;
 }

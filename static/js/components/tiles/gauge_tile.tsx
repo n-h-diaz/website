@@ -18,18 +18,22 @@
  * Component for rendering a gauge tile.
  */
 
-import axios from "axios";
 import _ from "lodash";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { drawGaugeChart } from "../../chart/draw_gauge";
 import { ASYNC_ELEMENT_HOLDER_CLASS } from "../../constants/css_constants";
-import { PointApiResponse } from "../../shared/stat_types";
 import { NamedTypedPlace, StatVarSpec } from "../../shared/types";
-import { stringifyFn } from "../../utils/axios";
 import { dataPointsToCsv } from "../../utils/chart_csv_utils";
-import { getPoint } from "../../utils/data_fetch_utils";
-import { getStatVarNames, ReplacementStrings } from "../../utils/tile_utils";
+import { getPoint, getSeries } from "../../utils/data_fetch_utils";
+import {
+  getDenomInfo,
+  getNoDataErrorMsg,
+  getStatVarNames,
+  getUnitAndScaling,
+  ReplacementStrings,
+  showError,
+} from "../../utils/tile_utils";
 import { ChartTileContainer } from "./chart_tile";
 import { useDrawOnResize } from "./use_draw_on_resize";
 
@@ -66,6 +70,7 @@ export interface GaugeChartData {
   };
   statVarName: string;
   props: GaugeTilePropType;
+  errorMsg: string;
 }
 
 export function GaugeTile(props: GaugeTilePropType): JSX.Element {
@@ -114,6 +119,7 @@ export function GaugeTile(props: GaugeTilePropType): JSX.Element {
               ])
           : null
       }
+      hasErrorMsg={gaugeData && !!gaugeData.errorMsg}
     >
       <div
         className={`svg-container ${ASYNC_ELEMENT_HOLDER_CLASS}`}
@@ -125,46 +131,62 @@ export function GaugeTile(props: GaugeTilePropType): JSX.Element {
 }
 
 const fetchData = async (props: GaugeTilePropType) => {
-  const mainStatVar = props.statVarSpec.statVar;
-  const denomStatVar = props.statVarSpec.denom;
-  const statVars = [mainStatVar];
-  if (denomStatVar) {
-    statVars.push(denomStatVar);
-  }
   try {
-    const resp = await getPoint(
+    const statResp = await getPoint(
       props.apiRoot,
       [props.place.dcid],
-      statVars,
+      [props.statVarSpec.statVar],
       ""
     );
+    const denomResp = props.statVarSpec.denom
+      ? await getSeries(
+          props.apiRoot,
+          [props.place.dcid],
+          [props.statVarSpec.denom]
+        )
+      : null;
     const statVarDcidToName = await getStatVarNames(
       [props.statVarSpec],
       props.apiRoot
     );
 
-    const statData = resp.data;
-    const mainStatData = statData[mainStatVar][props.place.dcid];
-    let value = mainStatData.value;
-    if (denomStatVar) {
-      value /= statData[denomStatVar][props.place.dcid].value;
-    }
-    if (props.statVarSpec.scaling) {
-      value *= props.statVarSpec.scaling;
-    }
+    const { unit, scaling } = getUnitAndScaling(props.statVarSpec, statResp);
     const sources = new Set<string>();
-
-    if (resp.facets[mainStatData.facet]) {
-      sources.add(resp.facets[mainStatData.facet].provenanceUrl);
+    const statData = statResp.data[props.statVarSpec.statVar][props.place.dcid];
+    if (statResp.facets[statData.facet]) {
+      sources.add(statResp.facets[statData.facet].provenanceUrl);
     }
+    let value = statData.value;
+    if (props.statVarSpec.denom) {
+      const denomInfo = getDenomInfo(
+        props.statVarSpec,
+        denomResp,
+        props.place.dcid,
+        statData.date
+      );
+      if (denomInfo && value) {
+        value /= denomInfo.value;
+        sources.add(denomInfo.source);
+      } else {
+        value = null;
+      }
+    }
+    if (value && scaling) {
+      value *= scaling;
+    }
+    const errorMsg =
+      _.isNull(value) || _.isUndefined(value)
+        ? getNoDataErrorMsg([props.statVarSpec])
+        : "";
     return {
       value,
-      date: mainStatData.date,
+      date: statData.date,
       sources,
-      statVar: mainStatVar,
-      statVarName: statVarDcidToName[mainStatVar],
+      statVar: props.statVarSpec.statVar,
+      statVarName: statVarDcidToName[props.statVarSpec.statVar],
       range: props.range,
       props,
+      errorMsg,
     };
   } catch (error) {
     console.log(error);
@@ -177,6 +199,10 @@ function draw(
   chartData: GaugeChartData,
   svgContainer: HTMLDivElement
 ): void {
+  if (chartData.errorMsg) {
+    showError(chartData.errorMsg, svgContainer);
+    return;
+  }
   drawGaugeChart(
     svgContainer,
     svgContainer.offsetWidth,

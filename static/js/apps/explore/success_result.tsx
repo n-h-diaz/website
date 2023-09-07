@@ -58,8 +58,17 @@ interface SuccessResultPropType {
   userMessage: UserMessageInfo;
 }
 
-// Whether or not to show topic list in the user message.
-function showTopicsInUserMsg(pageMetadata: SubjectPageMetadata): boolean {
+// Whether or not there is only a single place overview tile in the page
+// metadata.
+function isPlaceOverviewOnly(pageMetadata: SubjectPageMetadata): boolean {
+  // false if no page metadata or config or categories
+  if (
+    !pageMetadata ||
+    !pageMetadata.pageConfig ||
+    !pageMetadata.pageConfig.categories
+  ) {
+    return false;
+  }
   const categories = pageMetadata.pageConfig.categories;
   // False if there is more than 1 tile
   if (
@@ -124,21 +133,24 @@ export function SuccessResult(props: SuccessResultPropType): JSX.Element {
       window.removeEventListener("scroll", handleScroll);
     };
   }, []);
+  const placeOverviewOnly = isPlaceOverviewOnly(props.pageMetadata);
   return (
-    <div className="row explore-charts">
+    <div
+      className={`row explore-charts${
+        placeOverviewOnly ? " place-overview-only" : ""
+      }`}
+    >
       <div className="search-section-container" ref={searchSectionRef}>
         <div className="search-section-content container">
           <DebugInfo
             debugData={props.debugData}
             queryResult={props.queryResult}
           ></DebugInfo>
-          {props.exploreContext.dc !== "sdg" && (
-            <SearchSection
-              query={props.query}
-              debugData={props.debugData}
-              exploreContext={props.exploreContext}
-            />
-          )}
+          <SearchSection
+            query={props.query}
+            debugData={props.debugData}
+            exploreContext={props.exploreContext}
+          />
         </div>
       </div>
       <div className="col-12" ref={chartSectionRef}>
@@ -146,15 +158,17 @@ export function SuccessResult(props: SuccessResultPropType): JSX.Element {
           userMessage={props.userMessage}
           pageMetadata={props.pageMetadata}
           placeUrlVal={placeUrlVal}
-          shouldShowTopics={showTopicsInUserMsg(props.pageMetadata)}
+          shouldShowTopics={placeOverviewOnly}
         />
         {props.pageMetadata && props.pageMetadata.pageConfig && (
           <>
-            <ResultHeaderSection
-              pageMetadata={props.pageMetadata}
-              placeUrlVal={placeUrlVal}
-              hideRelatedTopics={showTopicsInUserMsg(props.pageMetadata)}
-            />
+            {!placeOverviewOnly && (
+              <ResultHeaderSection
+                pageMetadata={props.pageMetadata}
+                placeUrlVal={placeUrlVal}
+                hideRelatedTopics={false}
+              />
+            )}
             <RankingUnitUrlFuncContext.Provider
               value={(dcid: string) => {
                 return `/explore/#${getUpdatedHash({

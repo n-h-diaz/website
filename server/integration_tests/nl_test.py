@@ -26,14 +26,14 @@ _TEST_MODE = os.environ['TEST_MODE']
 _TEST_DATA = 'test_data'
 
 
-class IntegrationTest(NLWebServerTestCase):
+class NLTest(NLWebServerTestCase):
 
   # TODO: Validate contexts as well eventually.
   def run_sequence(self,
                    test_dir,
                    queries,
                    idx='medium_ft',
-                   detector='hybrid',
+                   detector='hybridsafety',
                    check_place_detection=False,
                    expected_detectors=[],
                    place_detector='dc',
@@ -42,7 +42,7 @@ class IntegrationTest(NLWebServerTestCase):
       detection_method = 'Heuristic Based'
     elif detector == 'llm':
       detection_method = 'LLM Based'
-    elif detector == 'hybrid':
+    elif detector == 'hybrid' or detector == 'hybridsafety':
       detection_method = 'Hybrid - Heuristic Based'
     ctx = {}
     for i, q in enumerate(queries):
@@ -181,9 +181,9 @@ class IntegrationTest(NLWebServerTestCase):
             # instead we would pick contained-in from context (County).
             'GDP of countries in the US',
         ],
-        detector='hybrid',
+        detector='hybridsafety',
         expected_detectors=[
-            'Hybrid - LLM Fallback',
+            'Hybrid - LLM Safety',
             'Hybrid - Heuristic Based',
             'Hybrid - Heuristic Based',
             'Hybrid - Heuristic Based',

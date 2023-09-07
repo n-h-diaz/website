@@ -57,15 +57,22 @@ import {
   isChildPlaceOf,
   shouldShowMapBoundaries,
 } from "../../tools/shared_util";
+import { getDenom } from "../../tools/timeline/util";
 import {
   getContextStatVar,
   getHash,
 } from "../../utils/app/visualization_utils";
 import { stringifyFn } from "../../utils/axios";
 import { mapDataToCsv } from "../../utils/chart_csv_utils";
-import { getPointWithin } from "../../utils/data_fetch_utils";
+import { getPointWithin, getSeriesWithin } from "../../utils/data_fetch_utils";
 import { getDateRange } from "../../utils/string_utils";
-import { ReplacementStrings } from "../../utils/tile_utils";
+import {
+  getDenomInfo,
+  getNoDataErrorMsg,
+  getUnitAndScaling,
+  ReplacementStrings,
+  showError,
+} from "../../utils/tile_utils";
 import { ChartTileContainer } from "./chart_tile";
 import { useDrawOnResize } from "./use_draw_on_resize";
 
@@ -117,10 +124,12 @@ export interface MapChartData {
   borderGeoJson?: GeoJsonData;
   // props used when fetching this data
   props: MapTilePropType;
+  errorMsg: string;
 }
 
 export function MapTile(props: MapTilePropType): JSX.Element {
   const svgContainer = useRef<HTMLDivElement>(null);
+  const errorMsgContainer = useRef<HTMLDivElement>(null);
   const mapContainer = useRef<HTMLDivElement>(null);
   const legendContainer = useRef<HTMLDivElement>(null);
   const [mapChartData, setMapChartData] = useState<MapChartData | undefined>(
@@ -151,7 +160,8 @@ export function MapTile(props: MapTilePropType): JSX.Element {
         props,
         svgContainer.current,
         legendContainer.current,
-        mapContainer.current
+        mapContainer.current,
+        errorMsgContainer.current
       );
       removeSpinner(props.id);
     }
@@ -178,6 +188,7 @@ export function MapTile(props: MapTilePropType): JSX.Element {
       svgContainer.current,
       legendContainer.current,
       mapContainer.current,
+      errorMsgContainer.current,
       null,
       zoomParams
     );
@@ -199,8 +210,9 @@ export function MapTile(props: MapTilePropType): JSX.Element {
       }
       isInitialLoading={_.isNull(mapChartData)}
       exploreLink={props.showExploreMore ? getExploreLink(props) : null}
+      hasErrorMsg={mapChartData && !!mapChartData.errorMsg}
     >
-      {showZoomButtons && (
+      {showZoomButtons && !mapChartData.errorMsg && (
         <div className="map-zoom-button-section">
           <div id={zoomParams.zoomInButtonId} className="map-zoom-button">
             <i className="material-icons">add</i>
@@ -216,6 +228,7 @@ export function MapTile(props: MapTilePropType): JSX.Element {
         ref={svgContainer}
         style={{ minHeight: svgHeight }}
       >
+        <div className="error-msg" ref={errorMsgContainer}></div>
         <div className="map" ref={mapContainer}></div>
         <div
           className="legend"
@@ -271,17 +284,13 @@ export const fetchData = async (
     dataDate
   );
   const populationPromise: Promise<SeriesApiResponse> = props.statVarSpec.denom
-    ? axios
-        .get(`${props.apiRoot || ""}/api/observations/series/within`, {
-          params: {
-            childType: props.enclosedPlaceType,
-            parentEntity: props.place.dcid,
-            variables: [props.statVarSpec.denom],
-          },
-          paramsSerializer: stringifyFn,
-        })
-        .then((resp) => resp.data)
-    : Promise.resolve({});
+    ? getSeriesWithin(
+        props.apiRoot,
+        props.place.dcid,
+        props.enclosedPlaceType,
+        [props.statVarSpec.denom]
+      )
+    : Promise.resolve(null);
   const parentPlacesPromise = props.parentPlaces
     ? Promise.resolve(props.parentPlaces)
     : axios
@@ -328,17 +337,6 @@ function rawToChart(
   props: MapTilePropType
 ): MapChartData {
   const metadataMap = rawData.placeStat.facets || {};
-  if (!_.isEmpty(rawData.population.facets)) {
-    Object.assign(metadataMap, rawData.population.facets);
-  }
-  let population = {};
-  if (
-    !_.isEmpty(rawData.population.data) &&
-    !_.isEmpty(statVarSpec.denom) &&
-    statVarSpec.denom in rawData.population.data
-  ) {
-    population = rawData.population.data[statVarSpec.denom];
-  }
   const placeStat = rawData.placeStat.data[statVarSpec.statVar] || {};
 
   const dataValues = {};
@@ -348,38 +346,52 @@ function rawToChart(
   if (_.isEmpty(rawData.geoJson)) {
     return;
   }
-  const isPerCapita = !_.isEmpty(statVarSpec.denom);
-  let unit = statVarSpec.unit;
+  const { unit, scaling } = getUnitAndScaling(statVarSpec, rawData.placeStat);
   for (const geoFeature of rawData.geoJson.features) {
     const placeDcid = geoFeature.properties.geoDcid;
     const placeChartData = getPlaceChartData(
       placeStat,
       placeDcid,
-      isPerCapita,
-      population,
+      false /* set isPerCapita as false here so that we can calculate per capita the same way as all the tiles */,
+      {},
       metadataMap
     );
     if (_.isEmpty(placeChartData)) {
       continue;
     }
     let value = placeChartData.value;
-    if (statVarSpec.scaling !== null && statVarSpec.scaling !== undefined) {
-      value = value * statVarSpec.scaling;
-    }
-    dataValues[placeDcid] = value;
-    metadata[placeDcid] = placeChartData.metadata;
-    dates.add(placeChartData.date);
     placeChartData.sources.forEach((source) => {
       if (!_.isEmpty(source)) {
         sources.add(source);
       }
     });
-    unit = unit || placeChartData.unit;
+    if (statVarSpec.denom) {
+      const denomInfo = getDenomInfo(
+        statVarSpec,
+        rawData.population,
+        placeDcid,
+        placeChartData.date
+      );
+      if (_.isEmpty(denomInfo)) {
+        // skip this data point because missing denom data.
+        continue;
+      }
+      value /= denomInfo.value;
+      placeChartData.metadata.popSource = denomInfo.source;
+      placeChartData.metadata.popDate = denomInfo.date;
+      sources.add(denomInfo.source);
+    }
+    if (scaling) {
+      value = value * scaling;
+    }
+    dataValues[placeDcid] = value;
+    metadata[placeDcid] = placeChartData.metadata;
+    dates.add(placeChartData.date);
   }
   // check for empty data values
-  if (_.isEmpty(dataValues)) {
-    return;
-  }
+  const errorMsg = _.isEmpty(dataValues)
+    ? getNoDataErrorMsg([props.statVarSpec])
+    : "";
   return {
     dataValues,
     metadata,
@@ -392,9 +404,10 @@ function rawToChart(
       rawData.parentPlaces
     ),
     showMapBoundaries: shouldShowMapBoundaries(place, enclosedPlaceType),
-    unit: statVarSpec.unit || unit,
+    unit,
     borderGeoJson: rawData.borderGeoJson,
     props,
+    errorMsg,
   };
 }
 
@@ -404,9 +417,21 @@ export function draw(
   svgContainer: HTMLDivElement,
   legendContainer: HTMLDivElement,
   mapContainer: HTMLDivElement,
+  errorMsgContainer: HTMLDivElement,
   svgWidth?: number,
   zoomParams?: MapZoomParams
 ): void {
+  if (chartData.errorMsg && errorMsgContainer) {
+    // clear the map and legend before adding error message
+    mapContainer.innerHTML = "";
+    legendContainer.innerHTML = "";
+    showError(chartData.errorMsg, errorMsgContainer);
+    return;
+  }
+  // clear the error message before drawing the map and legend
+  if (errorMsgContainer) {
+    errorMsgContainer.innerHTML = "";
+  }
   const mainStatVar = props.statVarSpec.statVar;
   const height = props.svgChartHeight;
   const dataValues = Object.values(chartData.dataValues);

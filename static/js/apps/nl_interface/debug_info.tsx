@@ -179,6 +179,7 @@ export function DebugInfo(props: DebugInfoProps): JSX.Element {
     blocked: props.debugData["blocked"] || false,
     originalQuery: props.debugData["original_query"],
     detectionType: props.debugData["detection_type"],
+    llmApiType: props.debugData["llm_api_type"],
     placeDetectionType: props.debugData["place_detection_type"],
     placesDetected: props.debugData["places_detected"],
     placesResolved: props.debugData["places_resolved"],
@@ -227,6 +228,9 @@ export function DebugInfo(props: DebugInfoProps): JSX.Element {
             <b>Detection Type: </b> {debugInfo.detectionType}
           </Row>
           <Row>
+            <b>LLM API Type: </b> {debugInfo.llmApiType}
+          </Row>
+          <Row>
             <b>Place Detection Type: </b>{" "}
             {debugInfo.placeDetectionType.toUpperCase()}
           </Row>
@@ -244,7 +248,12 @@ export function DebugInfo(props: DebugInfoProps): JSX.Element {
             <b>Place Detection:</b>
           </Row>
           <Row>
-            <Col>Places Detected: {debugInfo.placesDetected.join(", ")}</Col>
+            <Col>
+              Places Detected:{" "}
+              {debugInfo.placesDetected
+                ? debugInfo.placesDetected.join(", ")
+                : ""}
+            </Col>
           </Row>
           <Row>
             <Col>Places Resolved: {debugInfo.placesResolved}</Col>

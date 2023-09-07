@@ -54,6 +54,7 @@ interface SvRankingUnitsProps {
   apiRoot?: string;
   hideFooter?: boolean;
   onHoverToggled?: (placeDcid: string, hover: boolean) => void;
+  errorMsg?: string;
 }
 
 /**
@@ -97,7 +98,7 @@ export function SvRankingUnits(props: SvRankingUnitsProps): JSX.Element {
 
   return (
     <React.Fragment>
-      {rankingMetadata.showHighestLowest ? (
+      {rankingMetadata.showHighestLowest || props.errorMsg ? (
         <div
           className={`ranking-unit-container ${ASYNC_ELEMENT_CLASS} highest-ranking-container`}
         >
@@ -107,14 +108,18 @@ export function SvRankingUnits(props: SvRankingUnitsProps): JSX.Element {
             rankingGroup,
             rankingMetadata,
             true,
+            props.apiRoot,
             highestRankingUnitRef,
-            props.onHoverToggled
+            props.onHoverToggled,
+            props.errorMsg
           )}
           {!props.hideFooter && (
             <ChartFooter
-              handleEmbed={() => handleEmbed(true)}
+              handleEmbed={props.errorMsg ? null : () => handleEmbed(true)}
               exploreLink={
-                props.showExploreMore ? getExploreLink(props, true) : null
+                props.showExploreMore && !props.errorMsg
+                  ? getExploreLink(props, true)
+                  : null
               }
             >
               <NlChartFeedback id={props.tileId} />
@@ -133,6 +138,7 @@ export function SvRankingUnits(props: SvRankingUnitsProps): JSX.Element {
                 rankingGroup,
                 rankingMetadata,
                 true,
+                props.apiRoot,
                 highestRankingUnitRef,
                 props.onHoverToggled
               )}
@@ -158,6 +164,7 @@ export function SvRankingUnits(props: SvRankingUnitsProps): JSX.Element {
                 rankingGroup,
                 rankingMetadata,
                 false,
+                props.apiRoot,
                 lowestRankingUnitRef,
                 props.onHoverToggled
               )}
@@ -226,8 +233,10 @@ export function getRankingUnit(
   rankingGroup: RankingGroup,
   rankingMetadata: RankingTileSpec,
   isHighest: boolean,
+  apiRoot: string,
   rankingUnitRef?: RefObject<HTMLDivElement>,
-  onHoverToggled?: (placeDcid: string, hover: boolean) => void
+  onHoverToggled?: (placeDcid: string, hover: boolean) => void,
+  errorMsg?: string
 ): JSX.Element {
   const rankingCount = rankingMetadata.rankingCount || RANKING_COUNT;
   const topPoints = isHighest
@@ -264,7 +273,9 @@ export function getRankingUnit(
         rankingMetadata.showMultiColumn ? rankingGroup.svName : undefined
       }
       onHoverToggled={onHoverToggled}
-      headerChild={getSourcesJsx(rankingGroup.sources)}
+      headerChild={errorMsg ? null : getSourcesJsx(rankingGroup.sources)}
+      errorMsg={errorMsg}
+      apiRoot={apiRoot}
     />
   );
 }

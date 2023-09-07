@@ -19,16 +19,30 @@
  */
 
 import axios from "axios";
+import * as d3 from "d3";
 import _ from "lodash";
 import React from "react";
 
 import { NL_SOURCE_REPLACEMENTS } from "../constants/app/nl_interface_constants";
+import {
+  GA_EVENT_TILE_EXPLORE_MORE,
+  GA_PARAM_URL,
+  triggerGAEvent,
+} from "../shared/ga_events";
+import { PointApiResponse, SeriesApiResponse } from "../shared/stat_types";
 import { getStatsVarLabel } from "../shared/stats_var_labels";
 import { StatVarSpec } from "../shared/types";
 import { urlToDomain } from "../shared/util";
+import { getMatchingObservation } from "../tools/shared_util";
 import { EventTypeSpec, TileConfig } from "../types/subject_page_proto_types";
 import { stringifyFn } from "./axios";
 import { isNlInterface } from "./nl_interface_utils";
+import { getUnit } from "./stat_metadata_utils";
+
+const DEFAULT_PC_SCALING = 100;
+const DEFAULT_PC_UNIT = "%";
+const ERROR_MSG_PC = "Sorry, could not calculate per capita.";
+const ERROR_MSG_DEFAULT = "Sorry, we do not have this data.";
 
 export interface ReplacementStrings {
   placeName?: string;
@@ -259,7 +273,19 @@ export function getSourcesJsx(sources: Set<string>): JSX.Element {
     return (
       <span key={processedSource} {...{ part: "source" }}>
         {index > 0 ? ", " : ""}
-        <a href={processedSource}>{domain}</a>
+        <a
+          href={processedSource}
+          rel="noreferrer"
+          target="_blank"
+          onClick={(event) => {
+            triggerGAEvent(GA_EVENT_TILE_EXPLORE_MORE, {
+              [GA_PARAM_URL]: processedSource,
+            });
+            return true;
+          }}
+        >
+          {domain}
+        </a>
         {globalThis.viaGoogle ? " via Google" : ""}
       </span>
     );
@@ -269,4 +295,113 @@ export function getSourcesJsx(sources: Set<string>): JSX.Element {
       Source: {sourcesJsx}
     </div>
   );
+}
+
+/**
+ * Gets the unit and scaling factor to use for a stat var spec
+ * @param svSpec stat var spec to get unit and scaling for
+ * @param statPointData stat data for the tile as a PointApiResponse
+ * @param statSeriesData stat data for the tile as a SeriesApiResponse
+ */
+export function getUnitAndScaling(
+  svSpec: StatVarSpec,
+  statPointData?: PointApiResponse,
+  statSeriesData?: SeriesApiResponse
+): { unit: string; scaling: number } {
+  // If the stat var spec specifies a unit, use that unit
+  const result = {
+    unit: svSpec.unit,
+    scaling: svSpec.scaling,
+  };
+  // Otherwise, try to get the unit from the stat data
+  if (!result.unit) {
+    let statMetadata = null;
+    if (statPointData) {
+      const obsWithFacet = Object.values(
+        statPointData.data[svSpec.statVar]
+      ).find((obs) => !!obs.facet);
+      statMetadata = statPointData.facets[obsWithFacet.facet];
+    } else if (statSeriesData) {
+      const seriesWithFacet = Object.values(
+        statSeriesData.data[svSpec.statVar]
+      ).find((series) => !!series.facet);
+      statMetadata = statSeriesData.facets[seriesWithFacet.facet];
+    }
+    result.unit = getUnit(statMetadata);
+  }
+  // If this is a per capita case and no unit has been found, use the default
+  // per capita unit and scaling
+  if (svSpec.denom && !result.unit) {
+    result.unit = DEFAULT_PC_UNIT;
+    result.scaling = DEFAULT_PC_SCALING;
+  }
+  return result;
+}
+
+interface DenomInfo {
+  value: number;
+  date: string;
+  source: string;
+}
+
+/**
+ * Gets information needed to calculate per capita for a single stat data point.
+ * Uses the denom value with the closest date to the mainStatDate and returns
+ * null if no matching value is found or matching value is 0.
+ * @param svSpec the stat var spec of the data point to calculate per capita for
+ * @param denomData population data to use for the calculation
+ * @param placeDcid place of the data point
+ * @param mainStatDate date of the data point
+ * @param mainStatUnit unit of the data point
+ */
+export function getDenomInfo(
+  svSpec: StatVarSpec,
+  denomData: SeriesApiResponse,
+  placeDcid: string,
+  mainStatDate: string
+): DenomInfo {
+  if (!denomData || !(svSpec.denom in denomData.data)) {
+    return null;
+  }
+  const placeDenomData = denomData.data[svSpec.denom][placeDcid];
+  if (!placeDenomData || _.isEmpty(placeDenomData.series)) {
+    return null;
+  }
+  const denomSeries = placeDenomData.series;
+  const denomObs = getMatchingObservation(denomSeries, mainStatDate);
+  if (!denomObs || !denomObs.value) {
+    return null;
+  }
+  let source = "";
+  if (denomData.facets[placeDenomData.facet]) {
+    source = denomData.facets[placeDenomData.facet].provenanceUrl;
+  }
+  return {
+    value: denomObs.value,
+    date: denomObs.date,
+    source,
+  };
+}
+
+/**
+ * Gets the error message to show when there's no data for a tile.
+ * @param statVarSpec stat var spec for the tile.
+ */
+export function getNoDataErrorMsg(statVarSpec: StatVarSpec[]): string {
+  return statVarSpec.findIndex((spec) => !!spec.denom) >= 0
+    ? ERROR_MSG_PC
+    : ERROR_MSG_DEFAULT;
+}
+
+/**
+ * Shows an error message in a container div
+ * @param errorMsg the message to show
+ * @param container the container div to show the message
+ */
+export function showError(errorMsg: string, container: HTMLDivElement): void {
+  // Remove contents of the container
+  const containerSelection = d3.select(container);
+  containerSelection.selectAll("*").remove();
+  // Show error message in the container
+  containerSelection.html(errorMsg);
 }

@@ -18,7 +18,6 @@
  * Component for rendering a line type tile.
  */
 
-import axios from "axios";
 import _ from "lodash";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
@@ -34,12 +33,21 @@ import {
   getContextStatVar,
   getHash,
 } from "../../utils/app/visualization_utils";
-import { stringifyFn } from "../../utils/axios";
 import { dataGroupsToCsv } from "../../utils/chart_csv_utils";
-import { getBestUnit } from "../../utils/data_fetch_utils";
+import {
+  getBestUnit,
+  getSeries,
+  getSeriesWithin,
+} from "../../utils/data_fetch_utils";
 import { getPlaceNames } from "../../utils/place_utils";
 import { getUnit } from "../../utils/stat_metadata_utils";
-import { getStatVarNames, ReplacementStrings } from "../../utils/tile_utils";
+import {
+  getNoDataErrorMsg,
+  getStatVarNames,
+  getUnitAndScaling,
+  ReplacementStrings,
+  showError,
+} from "../../utils/tile_utils";
 import { ChartTileContainer } from "./chart_tile";
 import { useDrawOnResize } from "./use_draw_on_resize";
 
@@ -78,6 +86,7 @@ export interface LineChartData {
   unit: string;
   // props used when fetching this data
   props: LineTilePropType;
+  errorMsg: string;
 }
 
 export function LineTile(props: LineTilePropType): JSX.Element {
@@ -116,6 +125,7 @@ export function LineTile(props: LineTilePropType): JSX.Element {
       getDataCsv={chartData ? () => dataGroupsToCsv(chartData.dataGroup) : null}
       isInitialLoading={_.isNull(chartData)}
       exploreLink={props.showExploreMore ? getExploreLink(props) : null}
+      hasErrorMsg={chartData && !!chartData.errorMsg}
     >
       <div
         id={props.id}
@@ -151,37 +161,23 @@ export const fetchData = async (props: LineTilePropType) => {
     }
   }
 
-  let params;
-  let endpoint;
+  let dataPromise: Promise<SeriesApiResponse>;
   if (!_.isEmpty(props.comparisonPlaces)) {
-    endpoint = `${props.apiRoot || ""}/api/observations/series`;
-    params = {
-      entities: props.comparisonPlaces,
-      variables: statVars,
-    };
+    dataPromise = getSeries(props.apiRoot, props.comparisonPlaces, statVars);
   } else if (props.enclosedPlaceType) {
-    endpoint = `${props.apiRoot || ""}/api/observations/series/within`;
-    params = {
-      parentEntity: props.place.dcid,
-      childType: props.enclosedPlaceType,
-      variables: statVars,
-    };
+    dataPromise = getSeriesWithin(
+      props.apiRoot,
+      props.place.dcid,
+      props.enclosedPlaceType,
+      statVars
+    );
   } else {
-    endpoint = `${props.apiRoot || ""}/api/observations/series`;
-    params = {
-      variables: statVars,
-      entities: [props.place.dcid],
-    };
+    dataPromise = getSeries(props.apiRoot, [props.place.dcid], statVars);
   }
 
-  const resp = await axios.get(endpoint, {
-    // Fetch both numerator stat vars and denominator stat vars
-    params,
-    paramsSerializer: stringifyFn,
-  });
-
+  const resp = await dataPromise;
   // get place names from dcids
-  const placeDcids = Object.keys(resp.data.data[statVars[0]]);
+  const placeDcids = Object.keys(resp.data[statVars[0]]);
   const statVarNames = await getStatVarNames(props.statVarSpec, props.apiRoot);
   const placeNames = await getPlaceNames(placeDcids, props.apiRoot);
   // How legend labels should be set
@@ -192,7 +188,7 @@ export const fetchData = async (props: LineTilePropType) => {
     // If many places and many stat vars, legends need to show both
     useBothLabels: statVars.length > 1 && placeDcids.length > 1,
   };
-  return rawToChart(resp.data, props, placeNames, statVarNames, options);
+  return rawToChart(resp, props, placeNames, statVarNames, options);
 };
 
 export function draw(
@@ -202,6 +198,10 @@ export function draw(
 ): void {
   // TODO: Remove all cases of setting innerHTML directly.
   svgContainer.innerHTML = "";
+  if (chartData.errorMsg) {
+    showError(chartData.errorMsg, svgContainer);
+    return;
+  }
   const isCompleteLine = drawLineChart(
     svgContainer,
     props.svgChartWidth || svgContainer.offsetWidth,
@@ -247,16 +247,24 @@ function rawToChart(
       unit2count[svUnit]++;
     }
   }
-  let unit = getBestUnit(unit2count);
+  const bestUnit = getBestUnit(unit2count);
+  // filter stat data to only keep series that use best unit
+  for (const spec of props.statVarSpec) {
+    for (const place in raw.data[spec.statVar]) {
+      const series = raw.data[spec.statVar][place];
+      const svUnit = getUnit(raw.facets[series.facet]);
+      if (svUnit !== bestUnit) {
+        raw.data[spec.statVar][place] = { series: [] };
+      }
+    }
+  }
+  // Assume all stat var specs will use the same unit and scaling.
+  const { unit, scaling } = getUnitAndScaling(props.statVarSpec[0], null, raw);
   for (const spec of props.statVarSpec) {
     // Do not modify the React state. Create a clone.
     const entityToSeries = raw.data[spec.statVar];
     for (const placeDcid in entityToSeries) {
       const series = raw.data[spec.statVar][placeDcid];
-      const svUnit = getUnit(raw.facets[series.facet]);
-      if (svUnit !== unit) {
-        continue;
-      }
       let obsList = series.series;
       if (spec.denom) {
         const denomSeries = raw.data[spec.denom][placeDcid];
@@ -268,7 +276,7 @@ function rawToChart(
           dataPoints.push({
             label: obs.date,
             time: new Date(obs.date).getTime(),
-            value: spec.scaling ? obs.value * spec.scaling : obs.value,
+            value: scaling ? obs.value * scaling : obs.value,
           });
           allDates.add(obs.date);
         }
@@ -287,14 +295,15 @@ function rawToChart(
   for (let i = 0; i < dataGroups.length; i++) {
     dataGroups[i].value = expandDataPoints(dataGroups[i].value, allDates);
   }
-  if (!_.isEmpty(props.statVarSpec)) {
-    unit = props.statVarSpec[0].unit || unit;
-  }
+  const errorMsg = _.isEmpty(dataGroups)
+    ? getNoDataErrorMsg(props.statVarSpec)
+    : "";
   return {
     dataGroup: dataGroups,
     sources,
     unit,
     props,
+    errorMsg,
   };
 }
 

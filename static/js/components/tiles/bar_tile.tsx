@@ -30,7 +30,7 @@ import {
 } from "../../chart/draw_bar";
 import { SortType } from "../../chart/types";
 import { URL_PATH } from "../../constants/app/visualization_constants";
-import { PointApiResponse } from "../../shared/stat_types";
+import { PointApiResponse, SeriesApiResponse } from "../../shared/stat_types";
 import { NamedTypedPlace, StatVarSpec } from "../../shared/types";
 import { RankingPoint } from "../../types/ranking_unit_types";
 import { BarTileSpec } from "../../types/subject_page_proto_types";
@@ -39,11 +39,22 @@ import {
   getHash,
 } from "../../utils/app/visualization_utils";
 import { dataGroupsToCsv } from "../../utils/chart_csv_utils";
-import { getPoint, getPointWithin } from "../../utils/data_fetch_utils";
+import {
+  getPoint,
+  getPointWithin,
+  getSeries,
+  getSeriesWithin,
+} from "../../utils/data_fetch_utils";
 import { getPlaceNames } from "../../utils/place_utils";
-import { getUnit } from "../../utils/stat_metadata_utils";
 import { getDateRange } from "../../utils/string_utils";
-import { getStatVarNames, ReplacementStrings } from "../../utils/tile_utils";
+import {
+  getDenomInfo,
+  getNoDataErrorMsg,
+  getStatVarNames,
+  getUnitAndScaling,
+  ReplacementStrings,
+  showError,
+} from "../../utils/tile_utils";
 import { ChartTileContainer } from "./chart_tile";
 import { useDrawOnResize } from "./use_draw_on_resize";
 
@@ -102,6 +113,7 @@ export interface BarChartData {
   dateRange: string;
   props: BarTilePropType;
   statVarOrder: string[];
+  errorMsg: string;
 }
 
 export function BarTile(props: BarTilePropType): JSX.Element {
@@ -141,6 +153,7 @@ export function BarTile(props: BarTilePropType): JSX.Element {
       }
       isInitialLoading={_.isNull(barChartData)}
       exploreLink={props.showExploreMore ? getExploreLink(props) : null}
+      hasErrorMsg={barChartData && !!barChartData.errorMsg}
     >
       <div
         id={props.id}
@@ -164,12 +177,15 @@ export function getReplacementStrings(
 }
 
 export const fetchData = async (props: BarTilePropType) => {
-  const statSvs = props.statVarSpec.map((spec) => spec.statVar);
-  const denomSvs = props.statVarSpec.map((spec) => spec.denom);
-  const statVars = [statSvs, denomSvs].flat(1);
-  // Fetch populations.
-  statVars.push(FILTER_STAT_VAR);
+  const statSvs = props.statVarSpec
+    .map((spec) => spec.statVar)
+    .filter((sv) => !!sv);
+  const denomSvs = props.statVarSpec
+    .map((spec) => spec.denom)
+    .filter((sv) => !!sv);
+  const statVars = [statSvs, FILTER_STAT_VAR].flat(1);
   let statPromise: Promise<PointApiResponse>;
+  let denomPromise: Promise<SeriesApiResponse>;
   if (!_.isEmpty(props.comparisonPlaces)) {
     statPromise = getPoint(
       props.apiRoot,
@@ -178,6 +194,9 @@ export const fetchData = async (props: BarTilePropType) => {
       "",
       [statSvs]
     );
+    denomPromise = _.isEmpty(denomSvs)
+      ? Promise.resolve(null)
+      : getSeries(props.apiRoot, props.comparisonPlaces, denomSvs);
   } else {
     statPromise = getPointWithin(
       props.apiRoot,
@@ -187,16 +206,25 @@ export const fetchData = async (props: BarTilePropType) => {
       "",
       [statSvs]
     );
+    denomPromise = _.isEmpty(denomSvs)
+      ? Promise.resolve(null)
+      : getSeriesWithin(
+          props.apiRoot,
+          props.place.dcid,
+          props.enclosedPlaceType,
+          denomSvs
+        );
   }
   try {
-    const resp = await statPromise;
+    const statResp = await statPromise;
+    const denomResp = await denomPromise;
 
     // Find the most populated places.
     const popPoints: RankingPoint[] = [];
-    for (const place in resp.data[FILTER_STAT_VAR]) {
+    for (const place in statResp.data[FILTER_STAT_VAR]) {
       popPoints.push({
         placeDcid: place,
-        value: resp.data[FILTER_STAT_VAR][place].value,
+        value: statResp.data[FILTER_STAT_VAR][place].value,
       });
     }
     // Optionally sort by ascending/descending population
@@ -214,20 +242,29 @@ export const fetchData = async (props: BarTilePropType) => {
       props.statVarSpec,
       props.apiRoot
     );
-    return rawToChart(props, resp, popPoints, placeNames, statVarDcidToName);
+    return rawToChart(
+      props,
+      statResp,
+      denomResp,
+      popPoints,
+      placeNames,
+      statVarDcidToName
+    );
   } catch (error) {
+    console.log(error);
     return null;
   }
 };
 
 function rawToChart(
   props: BarTilePropType,
-  rawData: PointApiResponse,
+  statData: PointApiResponse,
+  denomData: SeriesApiResponse,
   popPoints: RankingPoint[],
   placeNames: Record<string, string>,
   statVarNames: Record<string, string>
 ): BarChartData {
-  const raw = _.cloneDeep(rawData);
+  const raw = _.cloneDeep(statData);
   const dataGroups: DataGroup[] = [];
   const sources = new Set<string>();
   // Track original order of stat vars in props, to maintain 1:1 pairing of
@@ -236,7 +273,8 @@ function rawToChart(
     (spec) => statVarNames[spec.statVar]
   );
 
-  let unit = "";
+  // Assume all stat var specs will use the same unit and scaling.
+  const { unit, scaling } = getUnitAndScaling(props.statVarSpec[0], statData);
   const dates: Set<string> = new Set();
   for (const point of popPoints) {
     const placeDcid = point.placeDcid;
@@ -256,16 +294,18 @@ function rawToChart(
       dates.add(stat.date);
       if (raw.facets[stat.facet]) {
         sources.add(raw.facets[stat.facet].provenanceUrl);
-        const svUnit = getUnit(raw.facets[stat.facet]);
-        unit = unit || svUnit;
       }
-      if (spec.denom && spec.denom in raw.data) {
-        const denomStat = raw.data[spec.denom][placeDcid];
-        dataPoint.value /= denomStat.value;
-        sources.add(raw.facets[denomStat.facet].provenanceUrl);
+      if (spec.denom) {
+        const denomInfo = getDenomInfo(spec, denomData, placeDcid, stat.date);
+        if (!denomInfo) {
+          // skip this data point because missing denom data.
+          continue;
+        }
+        dataPoint.value /= denomInfo.value;
+        sources.add(denomInfo.source);
       }
-      if (spec.scaling) {
-        dataPoint.value *= spec.scaling;
+      if (scaling) {
+        dataPoint.value *= scaling;
       }
       dataPoints.push(dataPoint);
     }
@@ -277,9 +317,6 @@ function rawToChart(
         new DataGroup(placeNames[placeDcid] || placeDcid, dataPoints, link)
       );
     }
-  }
-  if (!_.isEmpty(props.statVarSpec)) {
-    unit = props.statVarSpec[0].unit || unit;
   }
   // Optionally sort ascending/descending by value
   if (props.sort === "ascending" || props.sort === "descending") {
@@ -319,7 +356,9 @@ function rawToChart(
       dataGroup.value = dataGroup.value.slice(0, props.maxVariables);
     });
   }
-
+  const errorMsg = _.isEmpty(dataGroups)
+    ? getNoDataErrorMsg(props.statVarSpec)
+    : "";
   return {
     dataGroup: dataGroups.slice(0, props.maxPlaces || NUM_PLACES),
     sources,
@@ -327,6 +366,7 @@ function rawToChart(
     unit,
     props,
     statVarOrder,
+    errorMsg,
   };
 }
 
@@ -336,6 +376,10 @@ export function draw(
   svgContainer: HTMLDivElement,
   svgWidth?: number
 ): void {
+  if (chartData.errorMsg) {
+    showError(chartData.errorMsg, svgContainer);
+    return;
+  }
   if (props.horizontal) {
     drawHorizontalBarChart(
       svgContainer,
