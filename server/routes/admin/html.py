@@ -12,11 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import os
-from subprocess import CalledProcessError
-from subprocess import PIPE
-from subprocess import Popen
+import subprocess
 import time
 
 from flask import Blueprint
@@ -109,23 +106,18 @@ def load_data():
         })
         continue
 
-      with Popen(command,
-                 cwd=cwd,
-                 stdout=PIPE,
-                 universal_newlines=True,
-                 bufsize=1) as proc:
-        lines = []
-        for line in proc.stdout:
-          print(line, end='')
-          lines.append(line)
-        logging.info("Stage %s done.", stage)
-        output.append({
-            'stage': stage,
-            'status': 'success',
-            'durationSeconds': _duration(),
-            'stdout': lines
-        })
-    except CalledProcessError as cpe:
+      result = subprocess.run(command,
+                              capture_output=True,
+                              text=True,
+                              check=True,
+                              cwd=cwd)
+      output.append({
+          'stage': stage,
+          'status': 'success',
+          'durationSeconds': _duration(),
+          'stdout': result.stdout.strip().splitlines()
+      })
+    except subprocess.CalledProcessError as cpe:
       return jsonify({
           'stage': stage,
           'status': 'failure',
